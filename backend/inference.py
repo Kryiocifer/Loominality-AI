@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # Override with LOOMINALITY_MODEL_PATH if needed.
 DEFAULT_MODEL_PATH = "weights/best.pt"
 MODEL_PATH = os.getenv("LOOMINALITY_MODEL_PATH", DEFAULT_MODEL_PATH)
+CONF_THRESHOLD = 0.35
 
 
 class InferenceError(Exception):
@@ -51,6 +52,7 @@ class FabricDetector:
 
     def __init__(self, model_path: str = MODEL_PATH) -> None:
         self.model_path = model_path
+        self.conf_thresh = CONF_THRESHOLD
         self.model: YOLO | None = None
 
     @property
@@ -96,7 +98,9 @@ class FabricDetector:
         img_area = img_h * img_w
 
         try:
-            results = self.model.predict(image, conf=0.18, imgsz=640, verbose=False)
+            results = self.model.predict(
+                image, conf=CONF_THRESHOLD, imgsz=640, verbose=False
+            )
         except Exception as exc:
             raise InferenceError(f"Model inference failed: {exc}") from exc
 
@@ -179,12 +183,77 @@ class FabricDetector:
         finally:
             handle.remove()
 
-    def predict_from_bytes(self, contents: bytes) -> dict:
-        image = self.decode_image(contents)
-        preprocessed = self.preprocess_image(image)
-        detections = self.predict(preprocessed)
-        heatmap_b64 = self.generate_eigencam(preprocessed)
-        return {"detections": detections, "heatmap": heatmap_b64}
+    def predict_from_bytes(self, image_bytes: bytes) -> dict:
+        try:
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None:
+                raise InvalidImageError("Could not decode image file.")
+        except Exception as exc:
+            raise InvalidImageError("Invalid image data.") from exc
+
+        try:
+            # 1. Apply Contrast Enhancement
+            enhanced_img = self.preprocess_image(img)
+            img_h, img_w = enhanced_img.shape[:2]
+            img_area = img_h * img_w
+
+            # 2. Run Object Detection
+            results = self.model.predict(
+                enhanced_img,
+                conf=CONF_THRESHOLD,
+                imgsz=640,
+                verbose=False
+            )
+
+            detections = []
+            for result in results:
+                for box in result.boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].int().tolist()
+                    conf = float(box.conf[0].item())
+                    cls_id = int(box.cls[0].item())
+                    cls_name = self.model.names[cls_id]
+
+                    # --- 85th Percentile Color Heuristic Override ---
+                    if cls_name.lower() == "hole":
+                        try:
+                            # Crop region from original un-enhanced image
+                            roi = img[y1:y2, x1:x2]
+                            if roi.size > 0:
+                                hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                                sat_channel = hsv_roi[:, :, 1]
+                                
+                                # Use 85th percentile & max saturation to ignore white background
+                                p85_sat = np.percentile(sat_channel, 85)
+                                max_sat = np.max(sat_channel)
+                                
+                                # If rich color exists inside the box, override 'hole' to 'Stain'
+                                if p85_sat > 25 or max_sat > 60:
+                                    # Match exact class name from model dictionary if possible
+                                    cls_name = "Stain" if "Stain" in self.model.names.values() else "stain"
+                        except Exception as e:
+                            logger.warning("Color heuristic check failed: %s", e)
+
+                    box_area = (x2 - x1) * (y2 - y1)
+                    severity = calculate_severity(box_area, img_area)
+
+                    detections.append({
+                        "class": cls_name,
+                        "confidence": round(conf, 3),
+                        "severity": severity,
+                        "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+                    })
+
+            # 3. Generate EigenCAM Heatmap
+            heatmap_b64 = self.generate_eigencam(enhanced_img)
+
+            return {
+                "detections": detections,
+                "heatmap": heatmap_b64
+            }
+
+        except Exception as exc:
+            raise InferenceError(f"Inference execution failed: {exc}") from exc
 
 
 _detector: FabricDetector | None = None
