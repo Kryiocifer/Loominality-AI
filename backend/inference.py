@@ -214,31 +214,32 @@ class FabricDetector:
                     cls_id = int(box.cls[0].item())
                     cls_name = self.model.names[cls_id]
 
-                    # Calculate area immediately to use for our human-filter
+                    # Calculate area immediately
                     box_area = (x2 - x1) * (y2 - y1)
                     skip_detection = False
 
                     # ==========================================
-                    # 1. HOLE HEURISTICS (Humans & Color)
+                    # 1. HOLE HEURISTICS (Color Override FIRST)
                     # ==========================================
                     if cls_name.lower() == "hole":
                         
-                        # A. Human/Background Filter: If a "hole" takes up > 15% of the camera, it's a person/shadow.
-                        if (box_area / img_area) > 0.15:
-                            logger.info("Skipping false hole (Too large, likely a human/background).")
-                            skip_detection = True
+                        # A. Check Color FIRST: If it's brown/colored, flip to Stain
+                        try:
+                            roi = img[y1:y2, x1:x2]
+                            if roi.size > 0:
+                                hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                                sat_channel = hsv_roi[:, :, 1]
+                                if np.percentile(sat_channel, 85) > 25 or np.max(sat_channel) > 60:
+                                    cls_name = "Stain" if "Stain" in self.model.names.values() else "stain"
+                        except Exception as e:
+                            logger.warning(f"Color heuristic check failed: {e}")
                         
-                        # B. Stain Color Override: If it's small enough to be a hole, but it's brown, it's a stain.
-                        elif not skip_detection:
-                            try:
-                                roi = img[y1:y2, x1:x2]
-                                if roi.size > 0:
-                                    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-                                    sat_channel = hsv_roi[:, :, 1]
-                                    if np.percentile(sat_channel, 85) > 25 or np.max(sat_channel) > 60:
-                                        cls_name = "Stain" if "Stain" in self.model.names.values() else "stain"
-                            except Exception as e:
-                                logger.warning(f"Color heuristic check failed: {e}")
+                        # B. Human/Background Filter: If it is STILL a hole (not flipped to stain)
+                        # and it's massive (>15% of screen), drop it as a false positive.
+                        if cls_name.lower() == "hole":
+                            if (box_area / img_area) > 0.15:
+                                logger.info("Skipping false hole (Too large, likely a human/background).")
+                                skip_detection = True
 
                     # ==========================================
                     # 2. STAIN HEURISTICS (Plaid Pattern Filter)
