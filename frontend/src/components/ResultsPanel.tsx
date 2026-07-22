@@ -19,10 +19,32 @@ export function ResultsPanel({ imageSrc, result }: ResultsPanelProps) {
   const heatmapSrc = toDataUri(result.heatmap)
 
   const counts = {
-    critical: result.detections.filter((d) => d.severity === "critical").length,
-    major: result.detections.filter((d) => d.severity === "major").length,
-    minor: result.detections.filter((d) => d.severity === "minor").length,
+    critical: result.detections.filter((d) => d.severity.toLowerCase() === "critical").length,
+    major: result.detections.filter((d) => d.severity.toLowerCase() === "major").length,
+    minor: result.detections.filter((d) => d.severity.toLowerCase() === "minor").length,
   }
+
+  const getSummaryBadge = (detections: any[]) => {
+    if (!detections || detections.length === 0) return null;
+    
+    const avgConf = Math.round(
+      (detections.reduce((sum, d) => sum + d.confidence, 0) / detections.length) * 100
+    );
+    
+    const isCritical = detections.some(d => d.severity.toLowerCase() === 'critical');
+    const isMajor = detections.some(d => d.severity.toLowerCase() === 'major');
+    const badgeColor = isCritical ? 'bg-red-600' : isMajor ? 'bg-orange-500' : 'bg-green-500';
+    
+    const text = detections.length > 1 
+      ? `${detections.length} Defects (Avg ${avgConf}%)` 
+      : `${detections[0].class} ${avgConf}%`;
+
+    return (
+      <div className={`absolute top-0 left-0 px-3 py-1 text-sm font-bold text-white shadow-md z-10 rounded-br-lg ${badgeColor}`}>
+        {text}
+      </div>
+    );
+  };
 
   return (
     <div className="grid gap-6 lg:grid-cols-5">
@@ -45,7 +67,8 @@ export function ResultsPanel({ imageSrc, result }: ResultsPanelProps) {
               </ViewTab>
             </div>
           </div>
-
+          <div className="relative overflow-hidden rounded-lg">
+            {getSummaryBadge(result.detections)}
           {view === "boxes" ? (
             <AnnotatedImage src={imageSrc} detections={result.detections} />
           ) : heatmapSrc ? (
@@ -57,6 +80,7 @@ export function ResultsPanel({ imageSrc, result }: ResultsPanelProps) {
               No heatmap returned by the model.
             </div>
           )}
+        </div>
 
           <p className="mt-3 text-xs text-muted-foreground">
             {view === "boxes"

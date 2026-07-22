@@ -214,55 +214,60 @@ class FabricDetector:
                     cls_id = int(box.cls[0].item())
                     cls_name = self.model.names[cls_id]
 
-                    # Calculate area immediately
                     box_area = (x2 - x1) * (y2 - y1)
                     skip_detection = False
 
                     # ==========================================
-                    # 1. HOLE HEURISTICS (Color Override FIRST)
+                    # FILTERS + IMPROVED STAIN vs HOLE HEURISTIC
                     # ==========================================
-                    if cls_name.lower() == "hole":
-                        
-                        # A. Check Color FIRST: If it's brown/colored, flip to Stain
-                        try:
-                            roi = img[y1:y2, x1:x2]
-                            if roi.size > 0:
-                                hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-                                sat_channel = hsv_roi[:, :, 1]
-                                if np.percentile(sat_channel, 85) > 25 or np.max(sat_channel) > 60:
-                                    cls_name = "Stain" if "Stain" in self.model.names.values() else "stain"
-                        except Exception as e:
-                            logger.warning(f"Color heuristic check failed: {e}")
-                        
-                        # B. Human/Background Filter: If it is STILL a hole (not flipped to stain)
-                        # and it's massive (>15% of screen), drop it as a false positive.
-                        if cls_name.lower() == "hole":
-                            if (box_area / img_area) > 0.15:
-                                logger.info("Skipping false hole (Too large, likely a human/background).")
-                                skip_detection = True
 
-                    # ==========================================
-                    # 2. STAIN HEURISTICS (Plaid Pattern Filter)
-                    # ==========================================
-                    if cls_name.lower() == "stain" and not skip_detection:
+                    # Skip very large detections (likely humans / background)
+                    if (box_area / img_area) > 0.60:
+                        logger.info("Skipping detection (too large, likely human/background).")
+                        skip_detection = True
+
+                    # Improved Hole → Stain override
+                    if not skip_detection and cls_name.lower() == "hole":
                         try:
                             roi = img[y1:y2, x1:x2]
                             if roi.size > 0:
-                                gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                                edges = cv2.Canny(gray_roi, 100, 200)
-                                edge_density = np.count_nonzero(edges) / edges.size
-                                # Plaid shirts have extreme edge density (>12%).
-                                if edge_density > 0.12:
-                                    logger.info(f"Skipping false stain (Plaid Pattern). Edge Density: {edge_density:.3f}")
+                                # Reduce webcam noise
+                                roi_blur = cv2.GaussianBlur(roi, (5, 5), 0)
+                                hsv = cv2.cvtColor(roi_blur, cv2.COLOR_BGR2HSV)
+                                h, s, v = cv2.split(hsv)
+
+                                # Focus only on darker pixels
+                                dark_mask = v < 100
+                                dark_pixels = np.count_nonzero(dark_mask)
+
+                                if dark_pixels > 20:
+                                    mean_sat_dark = np.mean(s[dark_mask])
+
+                                    # If dark areas still have noticeable color → likely a stain
+                                    if mean_sat_dark > 45:
+                                        cls_name = "Stain"
+                                        logger.info(
+                                            f"Overriding Hole → Stain (mean dark saturation: {mean_sat_dark:.1f})"
+                                        )
+                        except Exception as e:
+                            logger.warning(f"Color heuristic failed: {e}")
+
+                    # Optional: skip high-edge "stains" that are likely fabric patterns
+                    if not skip_detection and cls_name.lower() == "stain":
+                        try:
+                            roi = img[y1:y2, x1:x2]
+                            if roi.size > 0:
+                                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                                blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+                                edges = cv2.Canny(blurred, 100, 200)
+                                if (np.count_nonzero(edges) / edges.size) > 0.12:
+                                    logger.info("Skipping false stain (likely fabric pattern).")
                                     skip_detection = True
-                        except Exception as e:
-                            logger.warning(f"Edge heuristic check failed: {e}")
+                        except Exception:
+                            pass
 
-                    # ==========================================
-                    # 3. FINAL APPEND
-                    # ==========================================
                     if skip_detection:
-                        continue  # Drop the false positive entirely!
+                        continue
 
                     severity = calculate_severity(box_area, img_area)
 

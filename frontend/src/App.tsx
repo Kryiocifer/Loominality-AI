@@ -44,6 +44,7 @@ export default function App() {
       setIsLoading(false)
     }
   }, [file])
+  
 
   return (
     <div className="min-h-screen bg-background text-foreground">
