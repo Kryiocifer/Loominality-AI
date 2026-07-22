@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from llm import router as llm_router  # 1. Import the router
 
 from inference import (
     InferenceError,
@@ -24,7 +25,7 @@ async def lifespan(app: FastAPI):
         raise
     yield
 
-
+# 2. Initialize the app EXACTLY ONCE
 app = FastAPI(
     title="Loominality AI Backend",
     version="1.0",
@@ -38,6 +39,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 3. Attach the Gemini explanation endpoint
+app.include_router(llm_router)
 
 
 @app.get("/health")

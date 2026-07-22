@@ -226,32 +226,6 @@ class FabricDetector:
                         logger.info("Skipping detection (too large, likely human/background).")
                         skip_detection = True
 
-                    # Improved Hole → Stain override
-                    if not skip_detection and cls_name.lower() == "hole":
-                        try:
-                            roi = img[y1:y2, x1:x2]
-                            if roi.size > 0:
-                                # Reduce webcam noise
-                                roi_blur = cv2.GaussianBlur(roi, (5, 5), 0)
-                                hsv = cv2.cvtColor(roi_blur, cv2.COLOR_BGR2HSV)
-                                h, s, v = cv2.split(hsv)
-
-                                # Focus only on darker pixels
-                                dark_mask = v < 100
-                                dark_pixels = np.count_nonzero(dark_mask)
-
-                                if dark_pixels > 20:
-                                    mean_sat_dark = np.mean(s[dark_mask])
-
-                                    # If dark areas still have noticeable color → likely a stain
-                                    if mean_sat_dark > 45:
-                                        cls_name = "Stain"
-                                        logger.info(
-                                            f"Overriding Hole → Stain (mean dark saturation: {mean_sat_dark:.1f})"
-                                        )
-                        except Exception as e:
-                            logger.warning(f"Color heuristic failed: {e}")
-
                     # Optional: skip high-edge "stains" that are likely fabric patterns
                     if not skip_detection and cls_name.lower() == "stain":
                         try:
