@@ -214,27 +214,55 @@ class FabricDetector:
                     cls_id = int(box.cls[0].item())
                     cls_name = self.model.names[cls_id]
 
-                    # --- 85th Percentile Color Heuristic Override ---
+                    # Calculate area immediately to use for our human-filter
+                    box_area = (x2 - x1) * (y2 - y1)
+                    skip_detection = False
+
+                    # ==========================================
+                    # 1. HOLE HEURISTICS (Humans & Color)
+                    # ==========================================
                     if cls_name.lower() == "hole":
+                        
+                        # A. Human/Background Filter: If a "hole" takes up > 15% of the camera, it's a person/shadow.
+                        if (box_area / img_area) > 0.15:
+                            logger.info("Skipping false hole (Too large, likely a human/background).")
+                            skip_detection = True
+                        
+                        # B. Stain Color Override: If it's small enough to be a hole, but it's brown, it's a stain.
+                        elif not skip_detection:
+                            try:
+                                roi = img[y1:y2, x1:x2]
+                                if roi.size > 0:
+                                    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                                    sat_channel = hsv_roi[:, :, 1]
+                                    if np.percentile(sat_channel, 85) > 25 or np.max(sat_channel) > 60:
+                                        cls_name = "Stain" if "Stain" in self.model.names.values() else "stain"
+                            except Exception as e:
+                                logger.warning(f"Color heuristic check failed: {e}")
+
+                    # ==========================================
+                    # 2. STAIN HEURISTICS (Plaid Pattern Filter)
+                    # ==========================================
+                    if cls_name.lower() == "stain" and not skip_detection:
                         try:
-                            # Crop region from original un-enhanced image
                             roi = img[y1:y2, x1:x2]
                             if roi.size > 0:
-                                hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-                                sat_channel = hsv_roi[:, :, 1]
-                                
-                                # Use 85th percentile & max saturation to ignore white background
-                                p85_sat = np.percentile(sat_channel, 85)
-                                max_sat = np.max(sat_channel)
-                                
-                                # If rich color exists inside the box, override 'hole' to 'Stain'
-                                if p85_sat > 25 or max_sat > 60:
-                                    # Match exact class name from model dictionary if possible
-                                    cls_name = "Stain" if "Stain" in self.model.names.values() else "stain"
+                                gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                                edges = cv2.Canny(gray_roi, 100, 200)
+                                edge_density = np.count_nonzero(edges) / edges.size
+                                # Plaid shirts have extreme edge density (>12%).
+                                if edge_density > 0.12:
+                                    logger.info(f"Skipping false stain (Plaid Pattern). Edge Density: {edge_density:.3f}")
+                                    skip_detection = True
                         except Exception as e:
-                            logger.warning("Color heuristic check failed: %s", e)
+                            logger.warning(f"Edge heuristic check failed: {e}")
 
-                    box_area = (x2 - x1) * (y2 - y1)
+                    # ==========================================
+                    # 3. FINAL APPEND
+                    # ==========================================
+                    if skip_detection:
+                        continue  # Drop the false positive entirely!
+
                     severity = calculate_severity(box_area, img_area)
 
                     detections.append({
